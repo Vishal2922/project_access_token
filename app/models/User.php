@@ -8,50 +8,80 @@ class User {
     public $name;
     public $email;
     public $password;
+    public $refresh_token; 
 
     public function __construct($db) {
         $this->conn = $db;
     }
 
     /**
-     * Check if email already exists in the database.
-     * 
+     * MODIFIED: Email check logic with refresh_token fetch
      */
     public function emailExists() {
-        $query = "SELECT id, password FROM " . $this->table_name . " WHERE email = ? LIMIT 0,1";
+        $query = "SELECT id, password, refresh_token FROM " . $this->table_name . " WHERE email = ? LIMIT 1";
         $stmt = $this->conn->prepare($query);
         $stmt->execute([$this->email]);
 
-        if ($stmt->rowCount() > 0) {
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             $this->id = $row['id'];
-            $this->password = $row['password']; // Hashed password from DB
+            $this->password = $row['password']; 
+            $this->refresh_token = $row['refresh_token'] ?? null;
             return true;
         }
         return false;
     }
 
-    
-     //Create a new user account.
-     
+    /**
+     * Standard User Creation
+     */
     public function create() {
-        $query = "INSERT INTO " . $this->table_name . " 
-                  SET name = :name, email = :email, password = :password";
-        
+        $query = "INSERT INTO " . $this->table_name . " SET name = :name, email = :email, password = :password";
         $stmt = $this->conn->prepare($query);
 
-        // Sanitize input
         $this->name = htmlspecialchars(strip_tags($this->name));
         $this->email = htmlspecialchars(strip_tags($this->email));
 
-        // Bind parameters
         $stmt->bindParam(':name', $this->name);
         $stmt->bindParam(':email', $this->email);
         $stmt->bindParam(':password', $this->password);
 
-        if ($stmt->execute()) {
-            return true;
-        }
-        return false;
+        return $stmt->execute();
+    }
+
+    /**
+     * UPDATED: Strict hexadecimal token update
+     */
+    public function updateRefreshToken($userId, $token) {
+        // Ippo intha $token Hex format-la irukkum (from JWT::toHex)
+        $query = "UPDATE " . $this->table_name . " SET refresh_token = :token WHERE id = :id";
+        
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(':token', $token);
+        $stmt->bindParam(':id', $userId);
+        
+        return $stmt->execute();
+    }
+
+    /**
+     * UPDATED: Validation based on HEX token string
+     */
+    public function validateRefreshToken($token) {
+        // Middleware cookie-la ulla JWT-ai hex-aa mathi inga anuppum
+        $query = "SELECT id, email FROM " . $this->table_name . " WHERE refresh_token = ? LIMIT 1";
+        
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute([$token]);
+
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * NEW: Clear refresh token during logout
+     * Intha method DB-la ulla token-ai NULL panni session-ai permanently end pannum.
+     */
+    public function clearRefreshToken($userId) {
+        $query = "UPDATE " . $this->table_name . " SET refresh_token = NULL WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        return $stmt->execute([$userId]);
     }
 }

@@ -12,12 +12,8 @@ class PatientController
         $this->patient = new Patient($this->db);
     }
 
-    /**
-     * Unified Validator: Enforces Phone, Gmail, Gender, and Age constraints
-     */
     private function validateRequestData($data, $isPatch = false)
     {
-        // 1. Age Validation
         if (!$isPatch || isset($data['age'])) {
             $age = $data['age'] ?? null;
             if ($age === null || !is_numeric($age) || $age < 0 || $age > 120) {
@@ -26,7 +22,6 @@ class PatientController
             }
         }
 
-        // 2. Gender Validation
         if (!$isPatch || isset($data['gender'])) {
             $gender = $data['gender'] ?? '';
             $validGenders = ['Male', 'Female', 'Other', 'male', 'female', 'other'];
@@ -36,7 +31,6 @@ class PatientController
             }
         }
 
-        // 3. Phone Validator (Exactly 10 digits)
         if (!$isPatch || isset($data['phone'])) {
             $phone = $data['phone'] ?? '';
             if (!preg_match('/^[0-9]{10}$/', $phone)) {
@@ -44,30 +38,23 @@ class PatientController
                 exit();
             }
         }
-
-        // 4. Gmail Validator
-        if (isset($data['user_email']) || isset($data['email'])) {
-            $email = $data['user_email'] ?? $data['email'] ?? '';
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !str_ends_with($email, '@gmail.com')) {
-                Response::json(400, "Invalid email format. Only @gmail.com addresses are accepted.");
-                exit();
-            }
-        }
     }
 
     /**
      * POST /api/patients
+     * FIXED: Strictly uses AuthMiddleware identity for ownership
      */
     public function store()
     {
         $data = json_decode(file_get_contents("php://input"), true);
         $this->validateRequestData($data);
 
-        $user_email = $data['user_email'] ?? $data['email'];
+        // Security: Logged-in user email-ai middleware-la irundhu mattume edukkurhom
+        $user_email = AuthMiddleware::$currentUserEmail; 
         $phone = $data['phone'];
 
         try {
-            $data['user_email'] = $user_email;
+            $data['user_email'] = $user_email; // Overwriting any manual input for security
             if ($this->patient->create($data)) {
                 Response::json(201, "Patient created and linked to " . $user_email);
             }
@@ -91,17 +78,23 @@ class PatientController
 
         $this->validateRequestData($data);
 
-        $existingPatient = $this->patient->readOne($id, $auth_email);
+        $existingPatient = $this->patient->readOnePublic($id);
+        
         if (!$existingPatient) {
-            Response::json(404, "Update failed: Patient not found or unauthorized.");
+            Response::json(404, "Update failed: Patient ID $id not found.");
             exit();
         }
 
-        // Merge existing data with new input to prevent NULL overwrites
+        // Ownership Check: Current user thaan owner-aa nu verify pannuvom
+        if ($existingPatient['user_email'] !== $auth_email) {
+            Response::json(403, "Unauthorized: You cannot update this record.");
+            exit();
+        }
+
         $finalData = array_merge($existingPatient, $data);
 
         try {
-            $this->patient->update($id, $auth_email, $finalData);
+            $this->patient->update($id, $auth_email, $finalData); 
             Response::json(200, "Patient updated successfully.");
         } catch (PDOException $e) {
             $this->handleDBError($e, $data['phone'] ?? $existingPatient['phone']);
@@ -110,7 +103,6 @@ class PatientController
 
     /**
      * PATCH /api/patients/{id}
-     * FIXED: Now merges data to prevent NULL values in unprovided fields
      */
     public function patch($id = null)
     {
@@ -122,40 +114,29 @@ class PatientController
         $data = json_decode(file_get_contents("php://input"), true);
         $auth_email = AuthMiddleware::$currentUserEmail;
 
-        // 1. Validate only the fields that were actually provided
         $this->validateRequestData($data, true);
 
-        // 2. Fetch the existing record
-        $existingPatient = $this->patient->readOne($id, $auth_email);
+        $existingPatient = $this->patient->readOnePublic($id);
         if (!$existingPatient) {
-            Response::json(404, "Patch failed: Patient not found or unauthorized.");
+            Response::json(404, "Patch failed: Patient ID $id not found.");
             exit();
         }
 
-        // 3. OVERCOME NULL ISSUE: Merge existing data with the partial updates
-        // This ensures unprovided fields (like age or gender) keep their old values.
+        // Ownership Check
+        if ($existingPatient['user_email'] !== $auth_email) {
+            Response::json(403, "Unauthorized: Ownership mismatch.");
+            exit();
+        }
+
         $finalData = array_merge($existingPatient, $data);
 
         try {
-            // Send the FULL merged array to the model update method
             if ($this->patient->update($id, $auth_email, $finalData)) {
                 Response::json(200, "Patient partially updated successfully.");
             }
         } catch (PDOException $e) {
             $this->handleDBError($e, $data['phone'] ?? $existingPatient['phone']);
         }
-    }
-
-    private function handleDBError($e, $phone, $email = '')
-    {
-        if ($e->getCode() == 23000 && str_contains($e->getMessage(), 'Duplicate entry')) {
-            Response::json(400, "Duplicate Error: Phone number ($phone) is already registered.");
-        } else if (str_contains($e->getMessage(), '1452')) {
-            Response::json(404, "Error: No user account found for '" . $email . "'.");
-        } else {
-            Response::json(500, "System Error: " . $e->getMessage());
-        }
-        exit();
     }
 
     /**
@@ -171,28 +152,20 @@ class PatientController
         $auth_email = AuthMiddleware::$currentUserEmail;
 
         try {
-            $stmt = $this->patient->delete($id, $auth_email);
+            // Passing false or omitting bypass to ensure user can only delete their own
+            $stmt = $this->patient->delete($id, $auth_email, false); 
             if ($stmt->rowCount() > 0) {
                 Response::json(200, "Patient deleted successfully.");
             } else {
-                Response::json(404, "Delete failed: Patient ID $id not found.");
+                Response::json(403, "Delete failed: Not authorized or ID not found.");
             }
         } catch (PDOException $e) {
             Response::json(500, "System Error: " . $e->getMessage());
         }
     }
 
-    /**
-     * GET /api/patients
-     * Returns the complete profile of the logged-in user and their patient list
-     */
-    /**
-     * GET /api/patients
-     * MODIFIED: Now returns ALL patient records from the database regardless of user context
-     */
     public function index()
     {
-        // Still verify if the requester is a logged-in user
         $user_email = AuthMiddleware::$currentUserEmail;
 
         if (!$user_email) {
@@ -200,8 +173,8 @@ class PatientController
             exit();
         }
 
-        // Fetch ALL patients instead of readByUser
-        $stmt = $this->patient->readAll();
+        // Option: readAll() for all records, or readByUser($user_email) for privacy
+        $stmt = $this->patient->readAll(); 
         $patients = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $responseData = [
@@ -218,12 +191,24 @@ class PatientController
 
     public function show($id)
     {
-        $user_email = AuthMiddleware::$currentUserEmail;
-        $row = $this->patient->readOne($id, $user_email);
+        $row = $this->patient->readOnePublic($id);
+        
         if ($row) {
             Response::json(200, $row);
         } else {
-            Response::json(404, "Patient not found.");
+            Response::json(404, "Patient ID $id not found.");
         }
+    }
+
+    private function handleDBError($e, $phone, $email = '')
+    {
+        if ($e->getCode() == 23000 && str_contains($e->getMessage(), 'Duplicate entry')) {
+            Response::json(400, "Duplicate Error: Phone number ($phone) is already registered.");
+        } else if (str_contains($e->getMessage(), '1452')) {
+            Response::json(404, "Error: No user account found for '" . $email . "'.");
+        } else {
+            Response::json(500, "System Error: " . $e->getMessage());
+        }
+        exit();
     }
 }

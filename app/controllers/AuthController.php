@@ -3,31 +3,21 @@ class AuthController {
     private $db;
 
     public function __construct() {
-        // Database connection initialize
         $database = new Database();
         $this->db = $database->getConnection();
     }
 
-    /**
-     * POST /api/register
-     * User registration with strict password and email validation
-     */
     public function register() {
-        // Get data from Middleware or raw input
         $data = $_POST['body'] ?? json_decode(file_get_contents("php://input"), true); 
         
-        // 1. Mandatory Field Check
         if(empty($data['name']) || empty($data['email']) || empty($data['password'])) {
             Response::json(400, "Name, Email and Password are required");
         }
 
-        // 2. Gmail Format Validation (Accepts only @gmail.com)
         if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL) || !str_ends_with($data['email'], '@gmail.com')) {
             Response::json(400, "Invalid email. Only @gmail.com addresses are accepted.");
         }
 
-        // 3. Password Complexity Check (Aa@1 format, length >= 8)
-        // Regex: 1 Upper, 1 Lower, 1 Number, 1 Special Char, Min 8 length
         $passwordRegex = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/';
         if (!preg_match($passwordRegex, $data['password'])) {
             Response::json(400, "Password weak! Must be >= 8 chars with uppercase, lowercase, number, and special char.");
@@ -37,15 +27,12 @@ class AuthController {
         $user->name = $data['name'];
         $user->email = $data['email'];
 
-        // 4. Duplicate Email Check
         if($user->emailExists()) {
             Response::json(400, "Email already exists");
         }
 
-        // 5. Hash password
         $user->password = password_hash($data['password'], PASSWORD_DEFAULT);
         
-        // 6. Save to Database
         if($user->create()) {
             Response::json(201, "User registered successfully");
         } else {
@@ -53,48 +40,86 @@ class AuthController {
         }
     }
 
-    /**
+   /**
      * POST /api/login
-     * User authentication & JWT generation
+     * Strictly uses .env values for expiry
      */
     public function login() {
         $data = $_POST['body'] ?? json_decode(file_get_contents("php://input"), true); 
         
-        // 1. Accept email & password
-        if(empty($data['email'])) {
-            Response::json(400, "Email is required");
-        }
-        if(empty($data['password'])) {
-            Response::json(400, "Password is required");
+        if(empty($data['email']) || empty($data['password'])) {
+            Response::json(400, "Email and Password are required");
         }
 
         $user = new User($this->db);
         $user->email = $data['email'];
 
-        // 2. Fetch user by email
         if($user->emailExists()) {
-            // 3. Verify password hash
             if(password_verify($data['password'], $user->password)) {
                 
-                // 4. If valid, generate JWT token
-                $tokenData = [
+                // 1. Generate JWT Refresh Token
+                $token = JWT::generate([
                     "user_id" => $user->id,
                     "email" => $user->email
-                ];
-                
-                $jwt = JWT::generate($tokenData); 
+                ]); 
 
-                // Return success response with token
+                // 2. Convert Token to Hexadecimal
+                $hexToken = JWT::toHex($token);
+
+                // 3. Save Hex Token in DB
+                if(!$user->updateRefreshToken($user->id, $hexToken)) {
+                    Response::json(500, "Error saving session.");
+                }
+
+                // 4. Set HttpOnly Cookie - Strictly from .env
+                setcookie(
+                    'refresh_token', 
+                    $token, 
+                    [
+                        'expires' => time() + (int)$_ENV['JWT_EXPIRY'], 
+                        'path' => '/',
+                        'httponly' => true,
+                        'secure' => false, 
+                        'samesite' => 'Strict'
+                    ]
+                );
+
+                // 5. Response - Strictly from .env
                 Response::json(200, [
                     "message" => "Login successful",
-                    "token" => $jwt,
-                    "expires_in" => 3600
+                    "token" => $token,  
+                    "rotation_every" => (int)$_ENV['JWT_ACCESS_EXPIRY'],
+                    "session_validity" => (int)$_ENV['JWT_EXPIRY']
                 ]);
             } else {
                 Response::json(401, "Invalid password");
             }
         } else {
-            Response::json(404, "User not found with the provided email");
+            Response::json(404, "User not found");
         }
+    }
+    /**
+     * POST /api/logout
+     * NEW: Clears HttpOnly Cookie and DB Hex Token
+     */
+    public function logout() {
+        // AuthMiddleware set panna ID-ai use pannuvom
+        $userId = AuthMiddleware::$currentUserId; 
+
+        if ($userId) {
+            $user = new User($this->db);
+            // 1. DB-la refresh_token-ai NULL pannuvom
+            $user->clearRefreshToken($userId);
+        }
+
+        // 2. Browser cookie-ai expire pannuvom
+        setcookie('refresh_token', '', [
+            'expires' => time() - 3600, // Past time sets expiry immediately
+            'path' => '/',
+            'httponly' => true,
+            'samesite' => 'Strict'
+        ]);
+
+        Response::json(200, ["message" => "Logged out successfully"]);
     }
 }
