@@ -38,11 +38,11 @@ class Patient
                   address = :address,
                   updated_at = CURRENT_TIMESTAMP
               WHERE id = :id 
-              AND user_email = :user_email"; // Overcomes ID difference by verifying ownership
+              AND user_email = :user_email";
 
         $stmt = $this->conn->prepare($query);
 
-        // Bind all merged values to prevent NULLs
+        // Bind all merged values to prevent NULLs // put values to placeholder
         $stmt->bindParam(':name', $data['name']);
         $stmt->bindParam(':age', $data['age']);
         $stmt->bindParam(':gender', $data['gender']);
@@ -54,7 +54,7 @@ class Patient
         return $stmt->execute();
     }
 
-    // 3. Delete Patient (Returns Statement for rowCount check)
+    // 3. Delete Patient 
     public function delete($id, $email)
     {
         $query = "DELETE FROM " . $this->table_name . " WHERE id = :id AND user_email = :email";

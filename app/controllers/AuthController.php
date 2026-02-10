@@ -61,8 +61,11 @@ class AuthController {
         $data = $_POST['body'] ?? json_decode(file_get_contents("php://input"), true); 
         
         // 1. Accept email & password
-        if(empty($data['email']) || empty($data['password'])) {
-            Response::json(400, "Email and password are required");
+        if(empty($data['email'])) {
+            Response::json(400, "Email is required");
+        }
+        if(empty($data['password'])) {
+            Response::json(400, "Password is required");
         }
 
         $user = new User($this->db);

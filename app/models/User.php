@@ -31,10 +31,9 @@ class User {
         return false;
     }
 
-    /**
-     * Create a new user account.
-     * [cite: 69, 76]
-     */
+    
+     //Create a new user account.
+     
     public function create() {
         $query = "INSERT INTO " . $this->table_name . " 
                   SET name = :name, email = :email, password = :password";
