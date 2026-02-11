@@ -4,88 +4,120 @@ class AuthMiddleware {
     public static $currentUserEmail;
 
     public function handle() {
-        // 1. Direct-ah cookie-la irundhu JWT token-ai edukkurohm
-        $token = $_COOKIE['refresh_token'] ?? null;
+        // 1. Header-la irundhu Access Token-ai edukkurohm
+        $headers = getallheaders();
+        $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? null;
+        $accessToken = null;
 
-        if (!$token) {
-            Response::json(401, "Unauthorized: No session found. Please login.");
+        if ($authHeader && preg_match('/Bearer\s(\S+)/', $authHeader, $matches)) {
+            $accessToken = $matches[1];
+        }
+
+        if (!$accessToken) {
+            Response::json(401, "Unauthorized: Access token missing.");
             exit();
         }
 
-        // 2. Token-ai verify pannuvom (Signature + Expiry check)
-        $userData = JWT::verify($token);
+        /**
+         * 2. IDENTITY VALIDATION (BEFORE Expiry Check)
+         * Token expire aagi irundhaalum 'getPayload' moolama details-ai edukkalaam.
+         * Vishal-oda (Expired) token-ai Hari anuppunaal, intha step-laivae block aagum.
+         */
+        $tokenPayload = JWT::getPayload($accessToken);
+        $refreshToken = $_COOKIE['refresh_token'] ?? null;
+        $refreshPayload = JWT::getPayload($refreshToken);
+
+        if (!$tokenPayload || !$refreshPayload) {
+            Response::json(401, "Unauthorized: Invalid session structure.");
+            exit();
+        }
+
+        // Parallel Identity Match Check
+        $accessTokenUserId = (int)$tokenPayload['user_id'];
+        $sessionUserId = (int)$refreshPayload['user_id'];
+
+        if ($accessTokenUserId !== $sessionUserId) {
+            Response::json(403, "Security Alert: Access token does not match your session identity.");
+            exit();
+        }
+
+        /**
+         * 3. EXPIRY & SIGNATURE VERIFICATION
+         * Identity match aanaal mattum, token innum valid-aa-nu check pannuvom.
+         */
+        $userData = JWT::verify($accessToken);
 
         if ($userData) {
-            // Token valid-aa irundha, athula ulla Hex value DB-oda match aagudha-nu check pannanum
-            return $this->validateWithDB($token, $userData);
-        } else {
-            // 3. AUTO-ROTATION: Token expire aagi irundha (after 30s), pudhu token generate pannuvom
-            return $this->rotateToken($token);
-        }
-    }
-
-    /**
-     * Database-la ulla Hex value-oda match panni verify pannum
-     */
-    private function validateWithDB($token, $data) {
-        $hexToken = JWT::toHex($token);
-        
-        $database = new Database();
-        $db = $database->getConnection();
-        $userModel = new User($db);
-
-        $user = $userModel->validateRefreshToken($hexToken);
-
-        if ($user) {
-            self::$currentUserId = $user['id'];
-            self::$currentUserEmail = $user['email'];
+            // Access token valid-aa irundha, identity-ai set pannuvom
+            self::$currentUserId = $userData['user_id'];
+            self::$currentUserEmail = $userData['email'];
             return true;
+        } else {
+            /**
+             * 4. REGENERATION FLOW
+             * Identity match aayiduchu, aana token expire aayiduchu (40s mudinjathu).
+             * Ippo auto-refresh panni pudhu pair tharuvom.
+             */
+            return $this->refreshAccessTokenFlow($accessToken);
         }
-
-        Response::json(401, "Unauthorized: Session invalid.");
-        exit();
     }
 
     /**
-     * Token Expired aanaal, auto-va pudhu token generate panni update pannum logic
+     * Automatic Token Rotation Logic (Sliding Session)
      */
-    private function rotateToken($oldToken) {
-        // Expired token-la irundhu user data-vai edukkurohm
-        $payload = JWT::getPayload($oldToken);
-        
-        if (!$payload) {
-            Response::json(401, "Unauthorized: Invalid token structure.");
+    private function refreshAccessTokenFlow($expiredToken) {
+        $refreshToken = $_COOKIE['refresh_token'] ?? null;
+
+        if (!$refreshToken) {
+            Response::json(401, "Session expired. Please login again.");
             exit();
         }
 
-        $userId = $payload['user_id'];
-        $email = $payload['email'];
+        $refreshData = JWT::verify($refreshToken);
 
-        // Pudhu token generate pannurhom (Next 30 seconds-ku)
-        $newToken = JWT::generate(["user_id" => $userId, "email" => $email]);
-        $newHex = JWT::toHex($newToken);
+        if (!$refreshData) {
+            Response::json(401, "Refresh session expired. Please login again.");
+            exit();
+        }
+
+        $userId = $refreshData['user_id'];
+        $email = $refreshData['email'];
 
         $database = new Database();
         $db = $database->getConnection();
         $userModel = new User($db);
 
-        // Database-la pudhu Hex-ai update pannurhom
-        if ($userModel->updateRefreshToken($userId, $newHex)) {
+        $hexRefresh = JWT::toHex($refreshToken);
+        $user = $userModel->validateRefreshToken($hexRefresh);
+
+        if ($user) {
+            if ($refreshData['ip'] !== $_SERVER['REMOTE_ADDR']) {
+                Response::json(403, "Security mismatch: Device not recognized.");
+                exit();
+            }
+
+            // Regenerate both tokens to reset 1-day expiry
+            $newAccessToken = JWT::generateAccessToken(["user_id" => $userId, "email" => $email]);
+            $newRefreshToken = JWT::generateRefreshToken(["user_id" => $userId, "email" => $email]);
             
-            // Cookie-laiyum pudhu token-ai update pannurhom
-            setcookie('refresh_token', $newToken, [
-                'expires' => time() + (7 * 24 * 60 * 60),
+            $userModel->updateRefreshToken($userId, JWT::toHex($newRefreshToken));
+
+            setcookie('refresh_token', $newRefreshToken, [
+                'expires' => time() + (int)$_ENV['JWT_REFRESH_EXPIRY'], 
                 'path' => '/',
                 'httponly' => true,
                 'samesite' => 'Strict'
             ]);
+
+            header("New-Access-Token: " . $newAccessToken);
+            header("Access-Control-Expose-Headers: New-Access-Token");
 
             self::$currentUserId = $userId;
             self::$currentUserEmail = $email;
             return true;
         }
 
-        Response::json(401, "Unauthorized: Re-authentication failed.");
+        Response::json(401, "Invalid session.");
         exit();
     }
 }

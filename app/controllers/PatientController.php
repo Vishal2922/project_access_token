@@ -42,19 +42,17 @@ class PatientController
 
     /**
      * POST /api/patients
-     * FIXED: Strictly uses AuthMiddleware identity for ownership
      */
     public function store()
     {
         $data = json_decode(file_get_contents("php://input"), true);
         $this->validateRequestData($data);
 
-        // Security: Logged-in user email-ai middleware-la irundhu mattume edukkurhom
         $user_email = AuthMiddleware::$currentUserEmail; 
         $phone = $data['phone'];
 
         try {
-            $data['user_email'] = $user_email; // Overwriting any manual input for security
+            $data['user_email'] = $user_email; 
             if ($this->patient->create($data)) {
                 Response::json(201, "Patient created and linked to " . $user_email);
             }
@@ -85,7 +83,6 @@ class PatientController
             exit();
         }
 
-        // Ownership Check: Current user thaan owner-aa nu verify pannuvom
         if ($existingPatient['user_email'] !== $auth_email) {
             Response::json(403, "Unauthorized: You cannot update this record.");
             exit();
@@ -122,7 +119,6 @@ class PatientController
             exit();
         }
 
-        // Ownership Check
         if ($existingPatient['user_email'] !== $auth_email) {
             Response::json(403, "Unauthorized: Ownership mismatch.");
             exit();
@@ -141,6 +137,7 @@ class PatientController
 
     /**
      * DELETE /api/patients/{id}
+     * FIXED: execute() panniya piragu rowCount() check pannurhom
      */
     public function destroy($id = null)
     {
@@ -152,12 +149,17 @@ class PatientController
         $auth_email = AuthMiddleware::$currentUserEmail;
 
         try {
-            // Passing false or omitting bypass to ensure user can only delete their own
+            // Step 1: Query-ai prepare panni Statement object-ai vaangurohm
             $stmt = $this->patient->delete($id, $auth_email, false); 
-            if ($stmt->rowCount() > 0) {
-                Response::json(200, "Patient deleted successfully.");
-            } else {
-                Response::json(403, "Delete failed: Not authorized or ID not found.");
+            
+            // Step 2: Query-ai execute pannurohm
+            if ($stmt->execute()) {
+                // Step 3: Success aanaal rowCount() check pannurohm
+                if ($stmt->rowCount() > 0) {
+                    Response::json(200, "Patient deleted successfully.");
+                } else {
+                    Response::json(403, "Delete failed: Not authorized or ID not found.");
+                }
             }
         } catch (PDOException $e) {
             Response::json(500, "System Error: " . $e->getMessage());
@@ -173,7 +175,6 @@ class PatientController
             exit();
         }
 
-        // Option: readAll() for all records, or readByUser($user_email) for privacy
         $stmt = $this->patient->readAll(); 
         $patients = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

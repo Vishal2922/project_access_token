@@ -1,4 +1,5 @@
 <?php
+
 class Patient
 {
     private $conn;
@@ -57,6 +58,7 @@ class Patient
 
     /**
      * 3. Delete Patient
+     * FIXED: Inga boolean-ku badhilaa statement object-ai return pannuvom.
      */
     public function delete($id, $email, $bypassEmail = false)
     {
@@ -73,11 +75,13 @@ class Patient
             $stmt->bindParam(":email", $email);
         }
 
-        return $stmt->execute(); 
+        // execute() panninaalum statement object-aiye thiruppi anuppuvom
+        // Ippo Controller-la $stmt->rowCount() work aagum.
+        return $stmt; 
     }
 
     /**
-     * 4. Read All (Admin view or Public)
+     * 4. Read All
      */
     public function readAll()
     {
@@ -88,7 +92,7 @@ class Patient
     }
 
     /**
-     * 5. Read By User (Specific to logged-in user)
+     * 5. Read By User
      */
     public function readByUser($email)
     {
@@ -115,8 +119,7 @@ class Patient
     }
 
     /**
-     * NEW: Read One Public (No Ownership Check)
-     * Controller-la call panna intha method ippo add aayiduchu.
+     * 7. Read One Public
      */
     public function readOnePublic($id)
     {

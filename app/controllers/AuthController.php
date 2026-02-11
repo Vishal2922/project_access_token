@@ -40,9 +40,9 @@ class AuthController {
         }
     }
 
-   /**
+    /**
      * POST /api/login
-     * Strictly uses .env values for expiry
+     * NEW WORKFLOW: Access Token in Response, Refresh Token in DB & Cookie
      */
     public function login() {
         $data = $_POST['body'] ?? json_decode(file_get_contents("php://input"), true); 
@@ -57,40 +57,44 @@ class AuthController {
         if($user->emailExists()) {
             if(password_verify($data['password'], $user->password)) {
                 
-                // 1. Generate JWT Refresh Token
-                $token = JWT::generate([
+                $payload = [
                     "user_id" => $user->id,
                     "email" => $user->email
-                ]); 
+                ];
 
-                // 2. Convert Token to Hexadecimal
-                $hexToken = JWT::toHex($token);
+                // 1. Generate Access Token (Strictly for Response - 40s)
+                $accessToken = JWT::generateAccessToken($payload);
 
-                // 3. Save Hex Token in DB
-                if(!$user->updateRefreshToken($user->id, $hexToken)) {
+                // 2. Generate Refresh Token (For DB and Cookie - 1 Day)
+                $refreshToken = JWT::generateRefreshToken($payload);
+
+                // 3. Convert Refresh Token to Hex and save in DB
+                $hexRefresh = JWT::toHex($refreshToken);
+                if(!$user->updateRefreshToken($user->id, $hexRefresh)) {
                     Response::json(500, "Error saving session.");
                 }
 
-                // 4. Set HttpOnly Cookie - Strictly from .env
+                // 4. Set Refresh Token in HttpOnly Cookie
                 setcookie(
                     'refresh_token', 
-                    $token, 
+                    $refreshToken, 
                     [
-                        'expires' => time() + (int)$_ENV['JWT_EXPIRY'], 
+                        'expires' => time() + (int)$_ENV['JWT_REFRESH_EXPIRY'], 
                         'path' => '/',
                         'httponly' => true,
-                        'secure' => false, 
+                        'secure' => false, // Set to true if using HTTPS
                         'samesite' => 'Strict'
                     ]
                 );
 
-                // 5. Response - Strictly from .env
+                // 5. Final Response: Access Token mattum thaan response body-la pogum
                 Response::json(200, [
                     "message" => "Login successful",
-                    "token" => $token,  
-                    "rotation_every" => (int)$_ENV['JWT_ACCESS_EXPIRY'],
-                    "session_validity" => (int)$_ENV['JWT_EXPIRY']
+                    "access_token" => $accessToken,  
+                    "access_token_expiry" => (int)$_ENV['JWT_ACCESS_EXPIRY'] . " seconds",
+                    "refresh_token_validity" => "Session active for 1 day"
                 ]);
+
             } else {
                 Response::json(401, "Invalid password");
             }
@@ -98,23 +102,20 @@ class AuthController {
             Response::json(404, "User not found");
         }
     }
+
     /**
      * POST /api/logout
-     * NEW: Clears HttpOnly Cookie and DB Hex Token
      */
     public function logout() {
-        // AuthMiddleware set panna ID-ai use pannuvom
         $userId = AuthMiddleware::$currentUserId; 
 
         if ($userId) {
             $user = new User($this->db);
-            // 1. DB-la refresh_token-ai NULL pannuvom
             $user->clearRefreshToken($userId);
         }
 
-        // 2. Browser cookie-ai expire pannuvom
         setcookie('refresh_token', '', [
-            'expires' => time() - 3600, // Past time sets expiry immediately
+            'expires' => time() - 3600, 
             'path' => '/',
             'httponly' => true,
             'samesite' => 'Strict'
