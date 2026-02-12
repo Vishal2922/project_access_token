@@ -45,6 +45,7 @@ $router->add('POST', '/api/login', 'AuthController', 'login');
  * Session-ai clear panna current user identity kandippa theriyanum.
  */
 $router->add('POST', '/api/logout', 'AuthController', 'logout', ['AuthMiddleware']); 
+$router->add('POST', '/api/token/refresh', 'AuthController', 'refresh');
 
 // Protected Patient Module 
 $router->add('GET', '/api/patients', 'PatientController', 'index', ['AuthMiddleware']); 

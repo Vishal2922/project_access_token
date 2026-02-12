@@ -13,116 +13,50 @@ class AuthMiddleware {
             $accessToken = $matches[1];
         }
 
+        // Token header-la illai-naa 401 Unauthorized 
         if (!$accessToken) {
             Response::json(401, "Unauthorized: Access token missing.");
             exit();
         }
 
         /**
-         * 2. #################################IDENTITY VALIDATION (BEFORE Expiry Check)################################
-         * Token payload-ai pirichu identity match aagudha-nu check pannuvom.
+         * 2. SECURITY LOGIC: Identity Anchor Check
+         * Token expire aagi irundhaalum, cookie-la ulla refresh token payload-oda match aaganum.
+         * Idhu identity mismatch detected aanaal block pannum.
          */
         $tokenPayload = JWT::getPayload($accessToken);
         $refreshToken = $_COOKIE['refresh_token'] ?? null;
         $refreshPayload = JWT::getPayload($refreshToken);
 
         if (!$tokenPayload || !$refreshPayload) {
-            Response::json(401, "Unauthorized: Invalid session structure.");
+            Response::json(401, "Invalid session structure.");
             exit();
         }
 
-        // Parallel Identity Match Check
-        $accessTokenUserId = (int)$tokenPayload['user_id'];
-        $sessionUserId = (int)$refreshPayload['user_id'];
-
-        if ($accessTokenUserId !== $sessionUserId) {
-            Response::json(403, "Security Alert: Access token does not match your session identity.");
+        // SECURITY CHECK: Access Token vs Refresh Token User ID match 
+        if ((int)$tokenPayload['user_id'] !== (int)$refreshPayload['user_id']) {
+            Response::json(403, "Security Alert: Identity mismatch detected.");
             exit();
         }
 
         /**
-         * 3. EXPIRY & SIGNATURE VERIFICATION
+         * 3. EXPIRY & SIGNATURE VERIFICATION 
          */
         $userData = JWT::verify($accessToken);
-        // if pass the token did not expire
+
         if ($userData) {
+            // PASS: Token valid-aa irundha identity-ai set pannuvom
             self::$currentUserId = $userData['user_id'];
             self::$currentUserEmail = $userData['email'];
             return true;
         } else {
             /**
-             * 4. REGENERATION FLOW
-             * Access Token expire aayiduchu, ippo refresh flow-vukkul pōvōm.
+             * 4. STEP 1 & 2 REQUIREMENT 
+             * Backend does NOT auto-refresh. Direct-aa 401 anuppuvom.
+             * Frontend catch panni /api/token/refresh-ai manual-aa call pannanum.
              */
-            return $this->refreshAccessTokenFlow($accessToken);
-        }
-    }
-
-    /**
-     * Automatic Token Rotation Logic (Sliding Session)
-     */
-    private function refreshAccessTokenFlow($expiredToken) {
-        $refreshToken = $_COOKIE['refresh_token'] ?? null;
-
-        if (!$refreshToken) {
-            Response::json(401, "Session expired. Please login again.");
+            Response::json(401, "Access token expired. Please call /api/token/refresh.");
             exit();
         }
-
-        // Validate Refresh Token Signature & Expiry
-        $refreshData = JWT::verify($refreshToken);
-
-        if (!$refreshData) {
-            Response::json(401, "Refresh session expired. Please login again.");
-            exit();
-        }
-
-        $userId = $refreshData['user_id'];
-        $email = $refreshData['email'];
-
-        $database = new Database();
-        $db = $database->getConnection();
-        $userModel = new User($db);
-
-        /**
-         * 5. HASH VALIDATION: 
-         * Token DB-la hash aagi irukkuradhaala, user_id matum plain refreshToken-ai anuppuvom.
-         */
-        $user = $userModel->validateRefreshToken($userId, $refreshToken); 
-
-        if ($user) {
-            // Security: Device IP check
-            if ($refreshData['ip'] !== $_SERVER['REMOTE_ADDR']) {
-                Response::json(403, "Security mismatch: Device not recognized.");
-                exit();
-            }
-
-            // 6. Regenerate BOTH tokens
-            $newAccessToken = JWT::generateAccessToken(["user_id" => $userId, "email" => $email]);
-            $newRefreshToken = JWT::generateRefreshToken(["user_id" => $userId, "email" => $email]);
-            
-            /**
-             * 7. UPDATE HASHED TOKEN: 
-             * Pudhu refresh token-ai hash panni DB-la store pannuvom.
-             */
-            $userModel->updateRefreshToken($userId, $newRefreshToken);
-
-            setcookie('refresh_token', $newRefreshToken, [
-                'expires' => time() + (int)$_ENV['JWT_REFRESH_EXPIRY'], 
-                'path' => '/',
-                'httponly' => true,
-                'samesite' => 'Strict'
-            ]);
-
-            header("New-Access-Token: " . $newAccessToken);
-            header("Access-Control-Expose-Headers: New-Access-Token");
-
-            self::$currentUserId = $userId;
-            self::$currentUserEmail = $email;
-            return true;
-        }
-
-        Response::json(401, "Invalid session context.");
-        exit();
     }
 }
